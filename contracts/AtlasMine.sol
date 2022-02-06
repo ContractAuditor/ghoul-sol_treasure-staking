@@ -28,7 +28,9 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         uint256 originalDepositAmount;
         uint256 depositAmount;
         uint256 lpAmount;
+        //-- it is enough to use uint32 and move after `rewardDebt`, we can save gas that way
         uint256 lockedUntil;
+        //-- it is enough to use uint32 and move after `rewardDebt`, we can save gas that way
         uint256 vestingLastUpdate;
         int256 rewardDebt;
         Lock lock;
@@ -46,6 +48,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
     uint256 public constant ONE = 1e18;
 
     // Magic token addr
+    //-- type of magic could be simply IERC20, there is no upgradable functionality used in scope of Atlas
     IERC20Upgradeable public magic;
     IMasterOfCoin public masterOfCoin;
 
@@ -66,6 +69,8 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
 
     // user => staked 1/1
     mapping(address => bool) public isLegion1_1Staked;
+    //-- I did quick check and you can save 4K gas for every single read, if instead of [][] you will use mapping:
+    //-- mapping (uint256 => mapping (uint256 => uint256))
     uint256[][] public legionBoostMatrix;
 
     /// @notice user => depositId => UserInfo
@@ -84,6 +89,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
     // user => boost
     mapping (address => uint256) public boosts;
 
+    //-- maybe indexed nft?
     event Staked(address nft, uint256 tokenId, uint256 amount, uint256 currentBoost);
     event Unstaked(address nft, uint256 tokenId, uint256 amount, uint256 currentBoost);
 
@@ -96,8 +102,10 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
 
     modifier updateRewards() {
         uint256 lpSupply = totalLpToken;
+        //-- this is uint, so it is enough to check !=
         if (lpSupply > 0) {
             (uint256 distributedRewards, uint256 undistributedRewards) = getRealMagicReward(masterOfCoin.requestRewards());
+            //-- this calculations could be unchecked, SEE comment in summary
             totalRewardsEarned += distributedRewards;
             totalUndistributedRewards += undistributedRewards;
             accMagicPerShare += distributedRewards * ONE / lpSupply;
@@ -156,6 +164,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
     }
 
     function getLegionBoost(uint256 _legionGeneration, uint256 _legionRarity) public view virtual returns (uint256) {
+        //-- suggested mapping will simplify this condition to simple: legionBoostMatrix[_legionGeneration][_legionRarity]
         if (_legionGeneration < legionBoostMatrix.length && _legionRarity < legionBoostMatrix[_legionGeneration].length) {
             return legionBoostMatrix[_legionGeneration][_legionRarity];
         }
@@ -163,10 +172,12 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
     }
 
     function utilization() public view virtual returns (uint256 util) {
+        //-- it is enough to check !=
         if (utilizationOverride > 0) return utilizationOverride;
 
         uint256 circulatingSupply = magic.totalSupply();
         uint256 len = excludedAddresses.length();
+        //-- this calculations could be unchecked, SEE comment in summary
         for (uint256 i = 0; i < len; i++) {
             circulatingSupply -= magic.balanceOf(excludedAddresses.at(i));
         }
@@ -264,6 +275,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
     function pendingRewardsPosition(address _user, uint256 _depositId) public view virtual returns (uint256 pending) {
         UserInfo storage user = userInfo[_user][_depositId];
         uint256 _accMagicPerShare = accMagicPerShare;
+        //-- no need to cache it, we using it only once
         uint256 lpSupply = totalLpToken;
 
         (uint256 distributedRewards,) = getRealMagicReward(masterOfCoin.getPendingRewards(address(this)));
@@ -291,11 +303,16 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         user.originalDepositAmount = _amount;
         user.depositAmount = _amount;
         user.lpAmount = lpAmount;
+        //-- unnecessary reading from storage user.lockedUntil, do:
+        //-- lockedUntilCache = block.timestamp + timelock
+        //-- then reuse lockedUntilCache in next 2 lines
         user.lockedUntil = block.timestamp + timelock;
         user.vestingLastUpdate = user.lockedUntil;
         user.rewardDebt = (lpAmount * accMagicPerShare / ONE).toInt256();
         user.lock = _lock;
 
+        //-- no need for safe transfer if you using trusted tokens
+        //-- based on a code I assume magic token will be trusted and you sure, there is no funky business there
         magic.safeTransferFrom(msg.sender, address(this), _amount);
 
         emit Deposit(msg.sender, depositId, _amount, _lock);
@@ -313,6 +330,8 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         if (!unlockAll) {
             require(block.timestamp >= user.lockedUntil, "Position is still locked");
             uint256 vestedAmount = _vestedPrincipal(msg.sender, _depositId);
+            //-- shouldn't we check that regardless of kill switch?
+            //-- it might be user friendly feature, so we do not throw when somebody miscalculated amount
             if (_amount > vestedAmount) {
                 _amount = vestedAmount;
             }
@@ -330,6 +349,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         user.rewardDebt -= (lpAmount * accMagicPerShare / ONE).toInt256();
 
         // Interactions
+        //-- no need for safe transfer if you using trusted tokens
         magic.safeTransfer(msg.sender, _amount);
 
         emit Withdraw(msg.sender, _depositId, _amount);
@@ -348,6 +368,10 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         UserInfo storage user = userInfo[msg.sender][_depositId];
 
         int256 accumulatedMagic = (user.lpAmount * accMagicPerShare / ONE).toInt256();
+        //-- I might not understand the logic completely yet, so question:
+        //-- what sign is used to represent "real" debt (user.rewardDebt)? negative or positive?
+        //-- if user.rewardDebt == -1 that means user has debt or surplus?
+        //-- if real debt is positive value, then all good, otherwise you should sum up values, not subtract
         uint256 _pendingMagic = (accumulatedMagic - user.rewardDebt).toUint256();
 
         // Effects
@@ -359,11 +383,13 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
 
         // Interactions
         if (_pendingMagic != 0) {
+            //-- no need for safe transfer if you using trusted tokens
             magic.safeTransfer(msg.sender, _pendingMagic);
         }
 
         emit Harvest(msg.sender, _depositId, _pendingMagic);
 
+        //-- if we update magic token, without sending new tokens to this contract, this will always fail
         require(magic.balanceOf(address(this)) >= magicTotalDeposits, "Run on banks");
     }
 
@@ -393,13 +419,17 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         treasureStaked[msg.sender][_tokenId] += _amount;
         treasureStakedAmount[msg.sender] += _amount;
 
+        //-- multiple storage read, cache this `treasureStakedAmount[msg.sender] + _amount` and reuse it
         require(treasureStakedAmount[msg.sender] <= 20, "Max 20 treasures per wallet");
 
         uint256 boost = getNftBoost(treasure, _tokenId, _amount);
+        //-- let's cache `boosts[msg.sender] + boost` and reuse it on emit, no need to read from storage multiple times
         boosts[msg.sender] += boost;
 
         _recalculateLpAmount(msg.sender);
 
+        //-- is is enough to use IERC1155, we not using any of Upgradeable features here,
+        //-- no need to scare people without reason :)
         IERC1155Upgradeable(treasure).safeTransferFrom(msg.sender, address(this), _tokenId, _amount, bytes(""));
 
         emit Staked(treasure, _tokenId, _amount, boosts[msg.sender]);
@@ -414,10 +444,12 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         treasureStakedAmount[msg.sender] -= _amount;
 
         uint256 boost = getNftBoost(treasure, _tokenId, _amount);
+        //-- let's cache `boosts[msg.sender] - boost` and reuse it on emit, no need to read from storage multiple times
         boosts[msg.sender] -= boost;
 
         _recalculateLpAmount(msg.sender);
 
+        //-- is is enough to use IERC1155
         IERC1155Upgradeable(treasure).safeTransferFrom(address(this), msg.sender, _tokenId, _amount, bytes(""));
 
         emit Unstaked(treasure, _tokenId, _amount, boosts[msg.sender]);
@@ -434,10 +466,12 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         }
 
         uint256 boost = getNftBoost(legion, _tokenId, 1);
+        //-- let's cache `boosts[msg.sender] + boost` and reuse it
         boosts[msg.sender] += boost;
 
         _recalculateLpAmount(msg.sender);
 
+        //-- is is enough to use IERC721
         IERC721Upgradeable(legion).transferFrom(msg.sender, address(this), _tokenId);
 
         emit Staked(legion, _tokenId, 1, boosts[msg.sender]);
@@ -451,16 +485,29 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         }
 
         uint256 boost = getNftBoost(legion, _tokenId, 1);
+        //-- let's cache `boosts[msg.sender] - boost` and reuse it
         boosts[msg.sender] -= boost;
 
         _recalculateLpAmount(msg.sender);
 
+        //-- is is enough to use IERC721
         IERC721Upgradeable(legion).transferFrom(address(this), msg.sender, _tokenId);
 
         emit Unstaked(legion, _tokenId, 1, boosts[msg.sender]);
+
+        //-- looks like there are few methods that are working based on same pattern:
+        //        uint256 boost = getNftBoost(legion, _tokenId, 1/amount);
+        //        boosts[msg.sender] +/-= boost;
+        //        _recalculateLpAmount(msg.sender);
+        //        IERC721Upgradeable(legion).transferFrom(address(this), msg.sender, _tokenId);
+        //--
+        //-- this could be easily wrapped with one method: less code is better ;) and easier to test
     }
 
     function isLegion1_1(uint256 _tokenId) public view virtual returns (bool) {
+        //-- this try-catch does not bring any value, you not doing any custom actions on errors
+        //-- same functionality could be done using simple .call, less code is better ;)
+
         try ILegionMetadataStore(legionMetadataStore).metadataForLegion(_tokenId) returns (ILegionMetadataStore.LegionMetadata memory metadata) {
             return metadata.legionGeneration == ILegionMetadataStore.LegionGeneration.GENESIS &&
                 metadata.legionRarity == ILegionMetadataStore.LegionRarity.LEGENDARY;
@@ -477,6 +524,8 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         if (_nft == treasure) {
             return getTreasureBoost(_tokenId, _amount);
         } else if (_nft == legion) {
+            //-- this try-catch does not bring any value, you not doing any custom actions on errors
+            //-- same functionality could be done using simple .call, less code is better ;)
             try ILegionMetadataStore(legionMetadataStore).metadataForLegion(_tokenId) returns (ILegionMetadataStore.LegionMetadata memory metadata) {
                 return getLegionBoost(uint256(metadata.legionGeneration), uint256(metadata.legionRarity));
             } catch Error(string memory /*reason*/) {
@@ -491,10 +540,17 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         return 0;
     }
 
+    //-- we can avoid multiple storage access to boosts[_user], if we add additional param to this method eg:
+    //-- _recalculateLpAmount(address _user, uint256 _nftBoost)
     function _recalculateLpAmount(address _user) internal virtual {
         uint256 nftBoost = boosts[_user];
 
         uint256[] memory depositIds = allUserDepositIds[_user].values();
+        //-- I would check if caching `depositIds.length` will save gas here, `depositIds` is already memory, but maybe
+        //-- but there is bigger issue here, there is a risk that we can run out of gas when too many deposits
+        //-- you should calculate what is the max number of deposits contract can handle in scope of methods where
+        //-- `_recalculateLpAmount` is used and then: either limit number of deposits OR implement some batch mechanism,
+        //-- however batch mechanism might not be easy or even possible without pausing contract
         for (uint256 i = 0; i < depositIds.length; i++) {
             uint256 depositId = depositIds[i];
             UserInfo storage user = userInfo[_user][depositId];
@@ -532,9 +588,18 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
 
     function setMagicToken(address _magic) external virtual onlyRole(ATLAS_MINE_ADMIN_ROLE) {
         magic = IERC20Upgradeable(_magic);
+        //-- it would be safer if you add this requirement after update:
+        //--         require(magic.balanceOf(address(this)) >= magicTotalDeposits, "Run on banks");
+        //-- otherwise some of the features will always fail, until contract will have enough new magic tokens
+        //-- maybe at least some event, to notify about that important update?
     }
 
     function setTreasure(address _treasure) external virtual onlyRole(ATLAS_MINE_ADMIN_ROLE) {
+        //-- this updates of addresses can do so many harm eg. I do not see any protection against even simple case:
+        //-- user stake token from treasureA, and after update how we assure Atlas has representation of treasureB
+        //-- to withdraw it bac kto user?
+        //-- I can only assume, that all this issues must be resolved outside of the scope of Atlas
+        //-- same for other addresses
         treasure = _treasure;
     }
 
@@ -559,6 +624,7 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         uint256 _totalUndistributedRewards = totalUndistributedRewards;
         totalUndistributedRewards = 0;
 
+        //-- no need for safe transfer
         magic.safeTransfer(_to, _totalUndistributedRewards);
         emit UndistributedRewardsWithdraw(_to, _totalUndistributedRewards);
     }

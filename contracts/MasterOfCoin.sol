@@ -16,6 +16,7 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
 
     bytes32 public constant MASTER_OF_COIN_ADMIN_ROLE = keccak256("MASTER_OF_COIN_ADMIN_ROLE");
 
+    //-- based on a usage I think it is enough to use IERC20
     IERC20Upgradeable public magic;
 
     /// @notice stream address => CoinStream
@@ -28,11 +29,13 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
     mapping (address => bool) public callbackRegistry;
 
     modifier streamExists(address _stream) {
+        //-- you using solidity v8, so you can use Errors instead of require, to save gas
         require(streams.contains(_stream), "Stream does not exist");
         _;
     }
 
     modifier streamActive(address _stream) {
+        //-- what about start date? is it active if not started yet?
         require(streamConfig[_stream].endTimestamp > block.timestamp, "Stream ended");
         _;
     }
@@ -73,12 +76,14 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
             return 0;
         }
 
+        //-- we can `unchecked` next line, you check impossible few lines below anyway
         stream.paid += rewardsPaid;
         stream.lastRewardTimestamp = block.timestamp;
 
         // this should never happen but better safe than sorry
         require(stream.paid <= stream.totalRewards, "Rewards overflow");
 
+        //-- assuming this is  trusted token, no need to spend gas on safe transfer
         magic.safeTransfer(msg.sender, rewardsPaid);
         emit RewardsPaid(msg.sender, rewardsPaid, stream.paid);
     }
@@ -89,8 +94,11 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
         streamExists(_stream)
         streamActive(_stream)
     {
+        //-- we doing external calls inside `_fundStream` but there is no reentrancy protection,
+        //-- it will be much safer, to move this line at the end, after we emit event and get tokens
         _fundStream(_stream, _amount);
 
+        //-- no need for safe transfer
         magic.safeTransferFrom(msg.sender, address(this), _amount);
         emit StreamGrant(_stream, msg.sender, _amount);
     }
@@ -113,6 +121,7 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
     function getRatePerSecond(address _stream) public view virtual returns (uint256 ratePerSecond) {
         CoinStream storage stream = streamConfig[_stream];
 
+        //-- shouldn't start date be inclusive?
         if (stream.startTimestamp < block.timestamp && block.timestamp < stream.endTimestamp) {
             ratePerSecond = stream.ratePerSecond;
         }
@@ -128,12 +137,19 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
         if (block.timestamp >= stream.endTimestamp) {
             // stream ended
             pendingRewards = totalRewards - paid;
+
+            //-- maybe it should be inclusive? >=
         } else if (block.timestamp > lastRewardTimestamp) {
             // stream active
             uint256 secondsFromLastPull = block.timestamp - lastRewardTimestamp;
             pendingRewards = secondsFromLastPull * stream.ratePerSecond;
 
             // in case of rounding error, make sure that paid + pending rewards is never more than totalRewards
+            //-- there is no such a thing as rounding error in solidity, division is not rounded up
+            //-- in case result would be 0.99999 (as floating number) -> it will be 0 in solidity
+            //-- so called "rounding error" will be possible in case of human error,
+            //-- when calculations are done in wrong order, but af fas I can tell, calculations looks ok,
+            //-- so this check is not necessary imo
             if (paid + pendingRewards > totalRewards) {
                 pendingRewards = totalRewards - paid;
             }
@@ -143,6 +159,7 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
     function _fundStream(address _stream, uint256 _amount) internal virtual callbackStream(_stream) {
         CoinStream storage stream = streamConfig[_stream];
 
+        //-- we can unchecked all 4 below lines, if token will not overflow, then nor do we
         uint256 secondsToEnd = stream.endTimestamp - stream.lastRewardTimestamp;
         uint256 rewardsLeft = secondsToEnd * stream.ratePerSecond;
         stream.ratePerSecond = (rewardsLeft + _amount) / secondsToEnd;
@@ -188,6 +205,8 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
         streamExists(_stream)
         streamActive(_stream)
     {
+        //-- I would first emit event, then call `_fundStream` because of external callbacks,
+        //-- it is easier to trace what is going on that way
         _fundStream(_stream, _amount);
         emit StreamFunded(_stream, _amount);
     }
@@ -222,6 +241,7 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
     {
         CoinStream storage stream = streamConfig[_stream];
 
+        //-- check of != is enough
         if (_startTimestamp > 0) {
             require(_startTimestamp > block.timestamp, "startTimestamp cannot be in the past");
 
@@ -229,6 +249,7 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
             stream.lastRewardTimestamp = _startTimestamp;
         }
 
+        //-- check of != is enough
         if (_endTimestamp > 0) {
             require(_endTimestamp > _startTimestamp, "Rewards must last > 1 sec");
             require(_endTimestamp > block.timestamp, "Cannot end rewards in the past");
@@ -259,6 +280,8 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
         virtual
         onlyRole(MASTER_OF_COIN_ADMIN_ROLE)
         streamExists(_stream)
+        //-- looks like redundant notification about rate change,
+        //-- there is no rate change when we changing callback settings
         callbackStream(_stream)
     {
         callbackRegistry[_stream] = _value;
@@ -266,11 +289,19 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
     }
 
     function withdrawMagic(address _to, uint256 _amount) external virtual onlyRole(MASTER_OF_COIN_ADMIN_ROLE) {
+        //-- I do not see a reason to use safe transfer here, this is just one command, we can remove event and
+        //-- rely on token transfer event, no dependency here, no need to protect anything
         magic.safeTransfer(_to, _amount);
         emit Withdraw(_to, _amount);
     }
 
     function setMagicToken(address _magic) external virtual onlyRole(MASTER_OF_COIN_ADMIN_ROLE) {
+        //-- so, we can change reward token any time?
+        //-- one second we claim for token A, another second we claim and we can get token B? that is real magic!
+        //-- admin can basically switch tokens any time, use some dummy ERC20 and users which claims rewards will get
+        //-- useless coins.
+        //-- If this is requested feature, then we should at lest add event, so anyone can be warned, when this happen.
         magic = IERC20Upgradeable(_magic);
+        //-- it would be safer, if you add requirement to check if contract has enough magic after setting up new token
     }
 }
