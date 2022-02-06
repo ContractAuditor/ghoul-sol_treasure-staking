@@ -145,10 +145,10 @@ contract MasterOfCoin is IMasterOfCoin, Initializable, AccessControlEnumerableUp
             pendingRewards = secondsFromLastPull * stream.ratePerSecond;
 
             // in case of rounding error, make sure that paid + pending rewards is never more than totalRewards
-            //-- there is no such a thing as rounding error in solidity, division is not rounded up
+            //-- division is not rounded in any way, it is just regular integer division
             //-- in case result would be 0.99999 (as floating number) -> it will be 0 in solidity
             //-- so called "rounding error" will be possible in case of human error,
-            //-- when calculations are done in wrong order, but af fas I can tell, calculations looks ok,
+            //-- when calculations are done in wrong order, but as far I can tell, calculations looks ok,
             //-- so this check is not necessary imo
             if (paid + pendingRewards > totalRewards) {
                 pendingRewards = totalRewards - paid;

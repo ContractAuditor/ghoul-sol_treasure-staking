@@ -308,6 +308,8 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         //-- then reuse lockedUntilCache in next 2 lines
         user.lockedUntil = block.timestamp + timelock;
         user.vestingLastUpdate = user.lockedUntil;
+
+        //@@ `rewardDebt` is individual reward per lpAmount, + means to be "paid", - means "paid" too much
         user.rewardDebt = (lpAmount * accMagicPerShare / ONE).toInt256();
         user.lock = _lock;
 
@@ -368,10 +370,6 @@ contract AtlasMine is Initializable, AccessControlEnumerableUpgradeable, ERC1155
         UserInfo storage user = userInfo[msg.sender][_depositId];
 
         int256 accumulatedMagic = (user.lpAmount * accMagicPerShare / ONE).toInt256();
-        //-- I might not understand the logic completely yet, so question:
-        //-- what sign is used to represent "real" debt (user.rewardDebt)? negative or positive?
-        //-- if user.rewardDebt == -1 that means user has debt or surplus?
-        //-- if real debt is positive value, then all good, otherwise you should sum up values, not subtract
         uint256 _pendingMagic = (accumulatedMagic - user.rewardDebt).toUint256();
 
         // Effects
