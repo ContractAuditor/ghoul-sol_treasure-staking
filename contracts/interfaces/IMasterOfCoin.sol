@@ -4,8 +4,11 @@ pragma solidity 0.8.11;
 interface IMasterOfCoin {
     struct CoinStream {
         uint256 totalRewards;
+        //-- it is enough to use uint32 and move at the end of struct, we can save gas that way
         uint256 startTimestamp;
+        //-- it is enough to use uint32 and move at the end of struct, we can save gas that way
         uint256 endTimestamp;
+        //-- it is enough to use uint32 and move at the end of struct, we can save gas that way
         uint256 lastRewardTimestamp;
         uint256 ratePerSecond;
         uint256 paid;
